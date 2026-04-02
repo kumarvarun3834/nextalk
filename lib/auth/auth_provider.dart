@@ -64,7 +64,7 @@ class AuthProvider with ChangeNotifier {
       var user = await _authService.login(email, password);
       if (user != null) {
         // Fetch user from Firestore
-        UserModel? firestoreUser = await _firestoreService.getUser(user.uid);
+        // UserModel? firestoreUser = await _firestoreService.getUser(user.uid);
 
         // If user exists in Firestore, use it; otherwise create a new UserModel
         _currentUser = firestoreUser ??

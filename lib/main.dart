@@ -3,18 +3,18 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:chatpal/screens/login_screen.dart';
-import 'package:chatpal/screens/home_screen.dart';
-import 'package:chatpal/services/notification_service.dart'; // <- your local notifications service
+import 'package:nextalk/screens/login_screen.dart';
+import 'package:nextalk/screens/home_screen.dart';
+import 'package:nextalk/services/notification_service.dart'; // <- your local notifications service
 import 'firebase_options.dart';
 
 /// Background message handler (for messages received when app is terminated)
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
-  await NotificationService.showNotification(
-    title: message.notification?.title ?? 'New message',
-    body: message.notification?.body ?? '',
-  );
+  // await NotificationService.showNotification(
+  //   title: message.notification?.title ?? 'New message',
+  //   body: message.notification?.body ?? '',
+  // );
 }
 
 void main() async {
@@ -27,7 +27,7 @@ void main() async {
   await FirebaseAppCheck.instance.activate(androidProvider: AndroidProvider.debug);
 
   // Initialize local notifications
-  await NotificationService.initialize();
+  // await NotificationService.initialize();
 
   // Firebase Messaging setup
   FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
@@ -45,14 +45,14 @@ void main() async {
   print('FCM Token: $token');
 
   // Foreground message listener
-  FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-    if (message.notification != null) {
-      NotificationService.showNotification(
-        title: message.notification!.title ?? 'New message',
-        body: message.notification!.body ?? '',
-      );
-    }
-  });
+  // FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+  //   if (message.notification != null) {
+  //     NotificationService.showNotification(
+  //       title: message.notification!.title ?? 'New message',
+  //       body: message.notification!.body ?? '',
+  //     );
+  //   }
+  // });
 
   runApp(MyApp());
 }

@@ -1,4 +1,4 @@
-package com.kumarvarun3834.chatpal
+package com.kumarvarun6338.nextalk
 
 import io.flutter.embedding.android.FlutterActivity
 

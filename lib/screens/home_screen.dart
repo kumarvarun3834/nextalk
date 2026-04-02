@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:chatpal/screens/chat_screen.dart';
-import 'package:chatpal/screens/profile_module.dart';
-import 'package:chatpal/models/user_model.dart';
+import 'package:nextalk/screens/chat_screen.dart';
+import 'package:nextalk/screens/profile_module.dart';
+import 'package:nextalk/models/user_model.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'login_screen.dart';
 

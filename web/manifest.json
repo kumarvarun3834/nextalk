@@ -1,6 +1,6 @@
 {
-    "name": "chatpal",
-    "short_name": "chatpal",
+    "name": "nextalk",
+    "short_name": "nextalk",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
