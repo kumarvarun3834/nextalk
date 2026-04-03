@@ -1,17 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../models/user_model.dart';
-import '../services/auth_service.dart';
-// import '../services/firestore_service.dart';
+import '../services/firestore_service.dart' hide FirestoreService;
 import 'profile_module.dart';
 
 class ProfileCreationScreen extends StatefulWidget {
   @override
-  _ProfileCreationScreenState createState() => _ProfileCreationScreenState();
+  _ProfileCreationScreenState createState() =>
+      _ProfileCreationScreenState();
 }
 
 class _ProfileCreationScreenState extends State<ProfileCreationScreen> {
-  final AuthService _auth = AuthService();
+  final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirestoreService _firestoreService = FirestoreService();
 
   final TextEditingController emailController = TextEditingController();
@@ -20,111 +20,110 @@ class _ProfileCreationScreenState extends State<ProfileCreationScreen> {
 
   bool _isLoading = false;
 
+  /// 🚀 Create account
   Future<void> createProfile() async {
-    String email = emailController.text.trim();
-    String password = passwordController.text.trim();
-    String confirm = confirmController.text.trim();
+    final email = emailController.text.trim();
+    final password = passwordController.text.trim();
+    final confirm = confirmController.text.trim();
+
+    if (email.isEmpty || password.isEmpty) {
+      _showSnack("Email & password required");
+      return;
+    }
 
     if (password != confirm) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Passwords do not match')),
-      );
+      _showSnack("Passwords do not match");
       return;
     }
 
     setState(() => _isLoading = true);
 
     try {
-      // Create new Firebase user
-      UserCredential result = await FirebaseAuth.instance
-          .createUserWithEmailAndPassword(email: email, password: password);
+      /// 1️⃣ Create Firebase user
+      UserCredential cred = await _auth.createUserWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
 
-      User? user = result.user;
+      User user = cred.user!;
 
-      if (user != null) {
-        // Send verification email
-        if (!user.emailVerified) {
-          await user.sendEmailVerification();
-        }
+      /// 2️⃣ Send verification email
+      await user.sendEmailVerification();
 
-        setState(() => _isLoading = false);
+      setState(() => _isLoading = false);
 
-        // Show verification dialog
-        showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (context) => AlertDialog(
-            title: const Text('Verify Your Email'),
-            content: Text(
-              'A verification email has been sent to $email.\n'
-                  'Please verify it before continuing.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () async {
-                  await user.reload();
-                  User? refreshedUser = FirebaseAuth.instance.currentUser;
+      /// 3️⃣ Show verification dialog
+      _showVerificationDialog(user, email);
 
-                  if (refreshedUser != null && refreshedUser.emailVerified) {
-                    Navigator.pop(context); // Close dialog
-
-                    // Add user to Firestore after verification
-                    final newUser = UserModel(
-                      uid: refreshedUser.uid,
-                      email: email,
-                      name: email,
-                      bio: 'hey i am using chatpal',
-                      profilePicture: '',
-                    );
-                    await _firestoreService.createUser(newUser);
-
-                    // Navigate to Profile Setup
-                    Navigator.pushReplacement(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => ProfileSetupScreen(email: email),
-                      ),
-                    );
-                  } else {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Email not verified yet. Please check your inbox.'),
-                      ),
-                    );
-                  }
-                },
-                child: const Text('I Verified'),
-              ),
-              TextButton(
-                onPressed: () async {
-                  try {
-                    await user.sendEmailVerification();
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Verification email resent.')),
-                    );
-                  } catch (e) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Failed to resend email: $e')),
-                    );
-                  }
-                },
-                child: const Text('Resend Email'),
-              ),
-            ],
-          ),
-        );
-      }
     } on FirebaseAuthException catch (e) {
       setState(() => _isLoading = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message ?? 'Sign-up failed')),
-      );
+      _showSnack(e.message ?? "Signup failed");
     } catch (e) {
       setState(() => _isLoading = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Unexpected error: $e')),
-      );
+      _showSnack("Error: $e");
     }
+  }
+
+  /// 📩 Verification dialog
+  void _showVerificationDialog(User user, String email) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        title: const Text("Verify Email"),
+        content: Text(
+          "Verification link sent to:\n$email\n\nPlease verify before continuing.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await user.reload();
+              final refreshed = _auth.currentUser;
+
+              if (refreshed != null && refreshed.emailVerified) {
+                Navigator.pop(context);
+
+                /// ✅ Create user in Firestore (NEW MODEL)
+                final newUser = UserModel(
+                  uid: refreshed.uid,
+                  email: email,
+                  name: email.split('@')[0], // default name
+                  bio: 'Hey 👋 I am using ChatPal',
+                  profilePicture: '',
+                  isOnline: true,
+                  fcmToken: null, // set later
+                );
+
+                await _firestoreService.createOrUpdateUser(newUser);
+
+                /// 🚀 Go to profile setup
+                Navigator.pushReplacement(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => ProfileSetupScreen(email: email),
+                  ),
+                );
+              } else {
+                _showSnack("Email not verified yet");
+              }
+            },
+            child: const Text("I Verified"),
+          ),
+          TextButton(
+            onPressed: () async {
+              await user.sendEmailVerification();
+              _showSnack("Verification email resent");
+            },
+            child: const Text("Resend"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showSnack(String msg) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(msg)));
   }
 
   @override
@@ -139,28 +138,40 @@ class _ProfileCreationScreenState extends State<ProfileCreationScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Create Account')),
+
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
+            /// Email
             TextField(
               controller: emailController,
               decoration: const InputDecoration(labelText: 'Email'),
             ),
+
             const SizedBox(height: 10),
+
+            /// Password
             TextField(
               controller: passwordController,
               obscureText: true,
               decoration: const InputDecoration(labelText: 'Password'),
             ),
+
             const SizedBox(height: 10),
+
+            /// Confirm Password
             TextField(
               controller: confirmController,
               obscureText: true,
-              decoration: const InputDecoration(labelText: 'Confirm Password'),
+              decoration:
+              const InputDecoration(labelText: 'Confirm Password'),
             ),
+
             const SizedBox(height: 20),
+
+            /// Button
             _isLoading
                 ? const CircularProgressIndicator()
                 : ElevatedButton(

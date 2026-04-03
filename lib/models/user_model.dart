@@ -1,14 +1,17 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-/// User model for ChatPal app with unread message support
+/// User model for ChatPal (scalable + future-ready)
 class UserModel {
-  final String uid;             // Firestore UID
+  final String uid;
   final String email;
   final String name;
   final String bio;
-  final String profilePicture;  // Firebase Storage URL
+  final String profilePicture;
 
-  int unreadCount;              // Not stored in Firestore, dynamic
+  final bool isOnline;
+  final DateTime? lastSeen;
+  final String? fcmToken;
+  final String? username;
 
   UserModel({
     required this.uid,
@@ -16,165 +19,125 @@ class UserModel {
     required this.name,
     required this.bio,
     required this.profilePicture,
-    this.unreadCount = 0,
+    this.isOnline = false,
+    this.lastSeen,
+    this.fcmToken,
+    this.username,
   });
 
-  /// Convert UserModel to Map for Firestore
+  /// Convert UserModel → Firestore
   Map<String, dynamic> toMap() {
     return {
       'email': email,
       'name': name,
       'bio': bio,
       'profilePicture': profilePicture,
+      'isOnline': isOnline,
+      'lastSeen': FieldValue.serverTimestamp(), // auto updated
+      'fcmToken': fcmToken,
+      'username': username,
       'createdAt': FieldValue.serverTimestamp(),
     };
   }
 
-  /// Convert Firestore document to UserModel
-  factory UserModel.fromMap(String uid, Map<String, dynamic> map, {int unreadCount = 0}) {
+  /// Convert Firestore → UserModel
+  factory UserModel.fromMap(String uid, Map<String, dynamic> map) {
     return UserModel(
       uid: uid,
       email: map['email'] ?? '',
       name: map['name'] ?? '',
       bio: map['bio'] ?? '',
       profilePicture: map['profilePicture'] ?? '',
-      unreadCount: unreadCount,
+      isOnline: map['isOnline'] ?? false,
+      lastSeen: (map['lastSeen'] as Timestamp?)?.toDate(),
+      fcmToken: map['fcmToken'],
+      username: map['username'],
     );
   }
 }
 
-/// Firestore service for user and chat operations
+/// Firestore Service (User + Chat management)
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
   /// Create or update user
-  Future<void> createUser(UserModel user) async {
-    try {
-      await _db.collection('db_user').doc(user.uid).set(user.toMap());
-      print('✅ User created/updated: ${user.email}');
-    } catch (e) {
-      print('❌ Error creating user: $e');
-    }
+  Future<void> createOrUpdateUser(UserModel user) async {
+    await _db.collection('users').doc(user.uid).set(
+      user.toMap(),
+      SetOptions(merge: true),
+    );
   }
 
-  /// Fetch all users
-  Future<List<UserModel>> getAllUsers() async {
-    try {
-      final snapshot = await _db.collection('db_user').get();
-      return snapshot.docs.map((doc) {
-        return UserModel.fromMap(doc.id, doc.data());
-      }).toList();
-    } catch (e) {
-      print('❌ Error fetching users: $e');
-      return [];
-    }
-  }
-
-  /// Get unread message count
-  Future<int> getUnreadMessageCount({
-    required String senderUid,
-    required String receiverUid,
+  /// Update online status
+  Future<void> updateOnlineStatus({
+    required String uid,
+    required bool isOnline,
   }) async {
-    try {
-      final docRef = _db.collection('db_user').doc(receiverUid).collection('chats').doc(senderUid);
-      final snapshot = await docRef.get();
-      if (!snapshot.exists) return 0;
-
-      final messages = List<Map<String, dynamic>>.from(snapshot.data()?['messages'] ?? []);
-      return messages.where((msg) => msg['viewStatus'] == false && msg['senderUid'] == senderUid).length;
-    } catch (e) {
-      print('❌ Error fetching unread count: $e');
-      return 0;
-    }
-  }
-
-  /// Stream of unread message count
-  Stream<int> unreadMessageCountStream({
-    required String senderUid,
-    required String receiverUid,
-  }) {
-    final docRef = _db.collection('db_user').doc(receiverUid).collection('chats').doc(senderUid);
-    return docRef.snapshots().map((snapshot) {
-      if (!snapshot.exists) return 0;
-      final messages = List<Map<String, dynamic>>.from(snapshot.data()?['messages'] ?? []);
-      return messages.where((msg) => msg['viewStatus'] == false && msg['senderUid'] == senderUid).length;
+    await _db.collection('users').doc(uid).update({
+      'isOnline': isOnline,
+      'lastSeen': FieldValue.serverTimestamp(),
     });
   }
 
-  /// Send a message (stored under both sender & receiver)
-  Future<void> sendMessage({
-    required String senderUid,
-    required String receiverUid,
-    required String message,
+  /// Update FCM token
+  Future<void> updateFcmToken({
+    required String uid,
+    required String token,
   }) async {
-    final timestamp = FieldValue.serverTimestamp();
-
-    final msgDataForReceiver = {
-      'senderUid': senderUid,
-      'receiverUid': receiverUid,
-      'message': message,
-      'timestamp': timestamp,
-      'viewStatus': false, // UNREAD for receiver
-    };
-
-    final msgDataForSender = {
-      'senderUid': senderUid,
-      'receiverUid': receiverUid,
-      'message': message,
-      'timestamp': timestamp,
-      'viewStatus': true, // always read for sender
-    };
-
-    final senderRef = _db.collection('db_user').doc(senderUid).collection('chats').doc(receiverUid);
-    final receiverRef = _db.collection('db_user').doc(receiverUid).collection('chats').doc(senderUid);
-
-    await senderRef.set({'messages': FieldValue.arrayUnion([msgDataForSender])}, SetOptions(merge: true));
-    await receiverRef.set({'messages': FieldValue.arrayUnion([msgDataForReceiver])}, SetOptions(merge: true));
+    await _db.collection('users').doc(uid).update({
+      'fcmToken': token,
+    });
   }
 
-  /// Mark messages as read
-  Future<void> markMessagesAsRead({
-    required String receiverUid,
-    required String senderUid,
-  }) async {
-    final docRef = _db.collection('db_user').doc(receiverUid).collection('chats').doc(senderUid);
-    final snapshot = await docRef.get();
-    if (!snapshot.exists) return;
+  /// Get all users (for new chat screen)
+  Future<List<UserModel>> getAllUsers() async {
+    final snapshot = await _db.collection('users').get();
 
-    final messages = List<Map<String, dynamic>>.from(snapshot.data()?['messages'] ?? []);
-    final updatedMessages = messages.map((msg) {
-      if (msg['viewStatus'] == false && msg['senderUid'] == senderUid) msg['viewStatus'] = true;
-      return msg;
-    }).toList();
-
-    await docRef.update({'messages': updatedMessages});
+    return snapshot.docs
+        .map((doc) => UserModel.fromMap(doc.id, doc.data()))
+        .toList();
   }
 
-  /// Get last message between two users
-  Future<String> getLastMessage({
-    required String senderUid,
-    required String receiverUid,
-  }) async {
-    try {
-      final docRef = _db
-          .collection('db_user')
-          .doc(receiverUid)
-          .collection('chats')
-          .doc(senderUid);
-      final snapshot = await docRef.get();
-      if (!snapshot.exists) return '';
+  /// Get single user
+  Future<UserModel?> getUser(String uid) async {
+    final doc = await _db.collection('users').doc(uid).get();
 
-      final messages = List<Map<String, dynamic>>.from(snapshot.data()?['messages'] ?? []);
-      if (messages.isEmpty) return '';
+    if (!doc.exists) return null;
 
-      // Sort by timestamp descending
-      messages.sort((a, b) => (b['timestamp'] ?? 0).compareTo(a['timestamp'] ?? 0));
-
-      return messages.first['text'] ?? '';
-    } catch (e) {
-      print('❌ Error fetching last message: $e');
-      return '';
-    }
+    return UserModel.fromMap(doc.id, doc.data()!);
   }
 
+  /// Stream single user (real-time updates)
+  Stream<UserModel?> streamUser(String uid) {
+    return _db.collection('users').doc(uid).snapshots().map((doc) {
+      if (!doc.exists) return null;
+      return UserModel.fromMap(doc.id, doc.data()!);
+    });
+  }
+
+  /// Create chat (1-to-1 or group)
+  Future<String> createChat({
+    required List<String> participants,
+    String? groupName,
+  }) async {
+    final doc = await _db.collection('chats').add({
+      'participants': participants,
+      'isGroup': participants.length > 2,
+      'groupName': groupName,
+      'createdAt': FieldValue.serverTimestamp(),
+      'lastMessage': '',
+      'lastTimestamp': FieldValue.serverTimestamp(),
+    });
+
+    return doc.id;
+  }
+
+  /// Get chats for current user (Home screen)
+  Stream<QuerySnapshot> getUserChats(String uid) {
+    return _db
+        .collection('chats')
+        .where('participants', arrayContains: uid)
+        .orderBy('lastTimestamp', descending: true)
+        .snapshots();
+  }
 }

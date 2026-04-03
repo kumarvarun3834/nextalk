@@ -1,126 +1,117 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-/// Message model for ChatPal app
+/// Message model (scalable + group ready)
 class MessageModel {
-  final String senderEmail;   // who sent the message
-  final String type;          // 'sent' or 'received'
-  final DateTime sentDate;
-  final String message;
-  final bool viewStatus;      // true if read
-  final String? media;        // optional image/video URL
+  final String id;
+  final String senderUid;
+  final String chatId;
+  final String text;
+  final String? mediaUrl;
+  final String type; // text, image, video
+  final List<String> readBy;
+  final Timestamp createdAt;
 
   MessageModel({
-    required this.senderEmail,
-    required this.type,
-    required this.sentDate,
-    required this.message,
-    this.viewStatus = false,
-    this.media,
+    required this.id,
+    required this.senderUid,
+    required this.chatId,
+    required this.text,
+    this.mediaUrl,
+    this.type = 'text',
+    this.readBy = const [],
+    required this.createdAt,
   });
 
-  /// Convert MessageModel to Map for Firestore
+  /// Convert to Firestore map
   Map<String, dynamic> toMap() {
     return {
-      'senderEmail': senderEmail,
+      'senderUid': senderUid,
+      'chatId': chatId,
+      'text': text,
+      'mediaUrl': mediaUrl,
       'type': type,
-      'sentDate': Timestamp.fromDate(sentDate),
-      'message': message,
-      'viewStatus': viewStatus,
-      'media': media ?? '',
+      'readBy': readBy,
+      'createdAt': FieldValue.serverTimestamp(), // ✅ server time
     };
   }
 
-  /// Convert Firestore document to MessageModel
-  factory MessageModel.fromMap(Map<String, dynamic> map) {
+  /// Convert Firestore → Model
+  factory MessageModel.fromMap(String id, Map<String, dynamic> map) {
     return MessageModel(
-      senderEmail: map['senderEmail'] ?? '',
-      type: map['type'] ?? 'sent',
-      sentDate: (map['sentDate'] as Timestamp).toDate(),
-      message: map['message'] ?? '',
-      viewStatus: map['viewStatus'] ?? false,
-      media: map['media'] ?? '',
+      id: id,
+      senderUid: map['senderUid'] ?? '',
+      chatId: map['chatId'] ?? '',
+      text: map['text'] ?? '',
+      mediaUrl: map['mediaUrl'],
+      type: map['type'] ?? 'text',
+      readBy: List<String>.from(map['readBy'] ?? []),
+      createdAt: map['createdAt'] ?? Timestamp.now(),
     );
-  }
-
-  /// Stream of unread message count
-  static Stream<int> unreadMessageCountStream({
-    required String senderUid,
-    required String receiverUid,
-  }) {
-    final docRef = FirebaseFirestore.instance
-        .collection('db_user')
-        .doc(receiverUid)
-        .collection('chats')
-        .doc(senderUid);
-
-    return docRef.snapshots().map((snapshot) {
-      if (!snapshot.exists) return 0;
-      final messages = List<Map<String, dynamic>>.from(snapshot.data()?['messages'] ?? []);
-      return messages.where((msg) => msg['viewStatus'] == false && msg['senderUid'] == senderUid).length;
-    });
   }
 }
 
-/// Service for sending and streaming messages
+/// Message service (NO duplication, scalable)
 class MessageService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
-  /// Send a message to both sender and receiver paths
+  /// Send message
   Future<void> sendMessage({
-    required String senderEmail,
-    required String receiverEmail,
-    required MessageModel message,
+    required String chatId,
+    required String senderUid,
+    required String text,
+    String? mediaUrl,
+    String type = 'text',
   }) async {
-    final senderRef = _db.collection('db_user').doc(senderEmail).collection(receiverEmail).doc();
-    final receiverRef = _db.collection('db_user').doc(receiverEmail).collection(senderEmail).doc();
+    final chatRef = _db.collection('chats').doc(chatId);
+    final msgRef = chatRef.collection('messages').doc();
+
+    final messageData = {
+      'senderUid': senderUid,
+      'chatId': chatId,
+      'text': text,
+      'mediaUrl': mediaUrl,
+      'type': type,
+      'readBy': [senderUid],
+      'createdAt': FieldValue.serverTimestamp(),
+    };
 
     await _db.runTransaction((txn) async {
-      // Add "sent" message for sender
-      txn.set(senderRef, message.toMap());
+      txn.set(msgRef, messageData);
 
-      // Add mirrored "received" message for receiver
-      txn.set(
-        receiverRef,
-        MessageModel(
-          senderEmail: senderEmail,
-          type: 'received',
-          sentDate: message.sentDate,
-          message: message.message,
-          viewStatus: false,
-          media: message.media,
-        ).toMap(),
-      );
+      txn.set(chatRef, {
+        'lastMessage': text,
+        'lastTimestamp': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
     });
   }
 
-  /// Stream messages between two users
-  Stream<List<MessageModel>> streamMessages({
-    required String userEmail,
-    required String chatPartnerEmail,
-  }) {
+  /// Stream messages (real-time)
+  Stream<List<MessageModel>> streamMessages(String chatId) {
     return _db
-        .collection('db_user')
-        .doc(userEmail)
-        .collection(chatPartnerEmail)
-        .orderBy('sentDate', descending: false)
+        .collection('chats')
+        .doc(chatId)
+        .collection('messages')
+        .orderBy('createdAt')
         .snapshots()
-        .map((snapshot) => snapshot.docs.map((d) => MessageModel.fromMap(d.data())).toList());
+        .map((snapshot) => snapshot.docs
+        .map((doc) => MessageModel.fromMap(doc.id, doc.data()))
+        .toList());
   }
 
-  /// Mark all unread messages from sender as read
-  Future<void> markMessagesAsRead({
-    required String receiverEmail,
-    required String senderEmail,
+  /// Mark message as read (group supported)
+  Future<void> markAsRead({
+    required String chatId,
+    required String messageId,
+    required String uid,
   }) async {
-    final query = await _db
-        .collection('db_user')
-        .doc(receiverEmail)
-        .collection(senderEmail)
-        .where('viewStatus', isEqualTo: false)
-        .get();
+    final ref = _db
+        .collection('chats')
+        .doc(chatId)
+        .collection('messages')
+        .doc(messageId);
 
-    for (var doc in query.docs) {
-      await doc.reference.update({'viewStatus': true});
-    }
+    await ref.update({
+      'readBy': FieldValue.arrayUnion([uid]),
+    });
   }
 }

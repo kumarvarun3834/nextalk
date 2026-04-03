@@ -1,13 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import '../services/firestore_service.dart';
+import '../models/message_model.dart';
 
 class ChatScreen extends StatefulWidget {
+  final String chatId;
   final String receiverUid;
   final String receiverName;
 
   const ChatScreen({
     Key? key,
+    required this.chatId,
     required this.receiverUid,
     required this.receiverName,
   }) : super(key: key);
@@ -19,51 +21,51 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _messageController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
-  final FirestoreService _firestoreService = FirestoreService();
-  final String currentUserUid = FirebaseAuth.instance.currentUser!.uid;
 
-  @override
-  void initState() {
-    super.initState();
-    _markMessagesAsDelivered();
-  }
-
-  Future<void> _markMessagesAsDelivered() async {
-    await _firestoreService.markAsDelivered(
-      senderUid: widget.receiverUid,
-      receiverUid: currentUserUid,
-    );
-  }
-
-  Future<void> sendMessage() async {
-    String messageText = _messageController.text.trim();
-    if (messageText.isEmpty) return;
-
-    try {
-      await _firestoreService.sendMessage(
-        senderUid: currentUserUid,
-        receiverUid: widget.receiverUid,
-        message: messageText,
-      );
-
-      _messageController.clear();
-      _scrollController.animateTo(
-        _scrollController.position.maxScrollExtent + 80,
-        duration: Duration(milliseconds: 300),
-        curve: Curves.easeOut,
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('❌ Error sending message: $e')),
-      );
-    }
-  }
+  final MessageService _messageService = MessageService();
+  final String currentUid = FirebaseAuth.instance.currentUser!.uid;
 
   @override
   void dispose() {
     _messageController.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  /// ✅ Send message (new system)
+  Future<void> sendMessage() async {
+    final text = _messageController.text.trim();
+    if (text.isEmpty) return;
+
+    await _messageService.sendMessage(
+      chatId: widget.chatId,
+      senderUid: currentUid,
+      text: text,
+    );
+
+    _messageController.clear();
+
+    /// scroll to bottom
+    Future.delayed(Duration(milliseconds: 100), () {
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent + 80,
+        duration: Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
+  /// ✅ Mark messages as read
+  void markMessagesAsRead(List<MessageModel> messages) {
+    for (var msg in messages) {
+      if (!msg.readBy.contains(currentUid)) {
+        _messageService.markAsRead(
+          chatId: widget.chatId,
+          messageId: msg.id,
+          uid: currentUid,
+        );
+      }
+    }
   }
 
   @override
@@ -77,88 +79,96 @@ class _ChatScreenState extends State<ChatScreen> {
           style: TextStyle(fontSize: 18 * textScale),
         ),
       ),
+
       body: Column(
         children: [
+          /// ✅ Messages list
           Expanded(
-            child: StreamBuilder<List<Map<String, dynamic>>>(
-              stream: _firestoreService.getMessages(
-                userUid: currentUserUid,
-                chatPartnerUid: widget.receiverUid,
-              ),
+            child: StreamBuilder<List<MessageModel>>(
+              stream: _messageService.streamMessages(widget.chatId),
               builder: (context, snapshot) {
-                if (!snapshot.hasData) return Center(child: CircularProgressIndicator());
+                if (!snapshot.hasData) {
+                  return Center(child: CircularProgressIndicator());
+                }
 
                 final messages = snapshot.data!;
-                final isSending = messages.any((m) => m['status'] == 'sending');
 
-                return Column(
-                  children: [
-                    Expanded(
-                      child: ListView.builder(
-                        controller: _scrollController,
-                        itemCount: messages.length,
-                        itemBuilder: (context, index) {
-                          final msg = messages[index];
-                          bool isMe = msg['senderUid'] == currentUserUid;
+                /// mark as read
+                markMessagesAsRead(messages);
 
-                          return Align(
-                            alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-                            child: Container(
-                              margin: EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-                              padding: EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-                              decoration: BoxDecoration(
-                                color: isMe ? Colors.blue[100] : Colors.grey[200],
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                crossAxisAlignment: CrossAxisAlignment.end,
-                                children: [
-                                  Flexible(
-                                    child: Text(
-                                      msg['message'] ?? '',
-                                      style: TextStyle(fontSize: 15),
-                                    ),
-                                  ),
-                                  if (isMe) ...[
-                                    SizedBox(width: 6),
-                                    _buildStatusIcon(msg['status']),
-                                  ],
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
+                return ListView.builder(
+                  controller: _scrollController,
+                  itemCount: messages.length,
+                  itemBuilder: (context, index) {
+                    final msg = messages[index];
+                    final isMe = msg.senderUid == currentUid;
 
-                    // Status bar for pending uploads
-                    if (isSending)
-                      Container(
-                        color: Colors.orange.shade50,
-                        padding: EdgeInsets.all(6),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
+                    return Align(
+                      alignment:
+                      isMe ? Alignment.centerRight : Alignment.centerLeft,
+                      child: Container(
+                        margin:
+                        EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                        padding:
+                        EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                        decoration: BoxDecoration(
+                          color:
+                          isMe ? Colors.blue.shade100 : Colors.grey.shade200,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
-                            Icon(Icons.cloud_upload, size: 16, color: Colors.orange),
-                            SizedBox(width: 6),
+                            /// message text
                             Text(
-                              'Sending messages...',
-                              style: TextStyle(color: Colors.orange),
+                              msg.text,
+                              style: TextStyle(fontSize: 15),
+                            ),
+
+                            SizedBox(height: 4),
+
+                            /// time + read status
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  msg.createdAt
+                                      .toDate()
+                                      .toLocal()
+                                      .toString()
+                                      .substring(11, 16), // HH:mm
+                                  style: TextStyle(
+                                      fontSize: 11, color: Colors.grey),
+                                ),
+                                SizedBox(width: 5),
+
+                                if (isMe)
+                                  Icon(
+                                    msg.readBy.length > 1
+                                        ? Icons.done_all
+                                        : Icons.done,
+                                    size: 16,
+                                    color: msg.readBy.length > 1
+                                        ? Colors.blue
+                                        : Colors.grey,
+                                  ),
+                              ],
                             ),
                           ],
                         ),
                       ),
-                  ],
+                    );
+                  },
                 );
               },
             ),
           ),
 
-          // Message input bar
+          /// ✅ Input box
           SafeArea(
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              padding:
+              const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
               child: Row(
                 children: [
                   Expanded(
@@ -169,7 +179,8 @@ class _ChatScreenState extends State<ChatScreen> {
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(20),
                         ),
-                        contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        contentPadding: EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 10),
                       ),
                     ),
                   ),
@@ -188,20 +199,5 @@ class _ChatScreenState extends State<ChatScreen> {
         ],
       ),
     );
-  }
-
-  Widget _buildStatusIcon(String? status) {
-    switch (status) {
-      case 'sending':
-        return Icon(Icons.access_time, size: 16, color: Colors.grey);
-      case 'sent':
-        return Icon(Icons.done, size: 16, color: Colors.grey);
-      case 'delivered':
-        return Icon(Icons.done_all, size: 16, color: Colors.grey);
-      case 'read':
-        return Icon(Icons.done_all, size: 16, color: Colors.blueAccent);
-      default:
-        return SizedBox.shrink();
-    }
   }
 }
