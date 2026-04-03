@@ -4,92 +4,124 @@ import '../models/user_model.dart';
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
-  /// -------------------------------
-  /// USER OPERATIONS
-  /// -------------------------------
   Future<void> createOrUpdateUser(UserModel user) async {
-    await _db.collection('db_user').doc(user.uid).set(
+    await _db.collection('users').doc(user.uid).set(
       user.toMap(),
       SetOptions(merge: true),
     );
   }
 
   Future<UserModel?> getUser(String uid) async {
-    final doc = await _db.collection('db_user').doc(uid).get();
+    final doc = await _db.collection('users').doc(uid).get();
     if (!doc.exists) return null;
-    return UserModel.fromMap(uid, doc.data()!);
+    return UserModel.fromMap(doc.id, doc.data()!);
+  }
+
+  Stream<UserModel?> streamUser(String uid) {
+    return _db.collection('users').doc(uid).snapshots().map((doc) {
+      if (!doc.exists) return null;
+      return UserModel.fromMap(doc.id, doc.data()!);
+    });
   }
 
   Future<List<UserModel>> getAllUsers() async {
-    final snapshot = await _db.collection('db_user').get();
-    return snapshot.docs.map((doc) {
-      return UserModel.fromMap(doc.id, doc.data());
-    }).toList();
+    final snapshot = await _db.collection('users').get();
+    return snapshot.docs
+        .map((doc) => UserModel.fromMap(doc.id, doc.data()))
+        .toList();
   }
 
-  /// -------------------------------
-  /// CHAT CORE
-  /// -------------------------------
-  final String chatsCollection = 'chats';
-
-  String getChatId(String uid1, String uid2) {
-    final ids = [uid1, uid2]..sort();
-    return ids.join('_');
+  Future<void> updateOnlineStatus({
+    required String uid,
+    required bool isOnline,
+  }) async {
+    await _db.collection('users').doc(uid).update({
+      'isOnline': isOnline,
+      'lastSeen': FieldValue.serverTimestamp(),
+    });
   }
 
-  /// -------------------------------
-  /// SEND MESSAGE
-  /// -------------------------------
+  Future<void> updateFcmToken({
+    required String uid,
+    required String token,
+  }) async {
+    await _db.collection('users').doc(uid).update({
+      'fcmToken': token,
+    });
+  }
+
+  /// ===============================
+  /// CHAT SECTION
+  /// ===============================
+
+  /// Create OR get existing chat (prevents duplicates)
+  Future<String> createOrGetChat({
+    required List<String> participants,
+    String? groupName,
+  }) async {
+    participants.sort(); // IMPORTANT for consistency
+
+    final existing = await _db
+        .collection('chats')
+        .where('participants', isEqualTo: participants)
+        .get();
+
+    if (existing.docs.isNotEmpty) {
+      return existing.docs.first.id;
+    }
+
+    final doc = await _db.collection('chats').add({
+      'participants': participants,
+      'isGroup': participants.length > 2,
+      'groupName': groupName,
+      'createdAt': FieldValue.serverTimestamp(),
+      'lastMessage': '',
+      'lastTimestamp': FieldValue.serverTimestamp(),
+    });
+
+    return doc.id;
+  }
+
+  /// Get user chats (Home Screen)
+  Stream<QuerySnapshot> getUserChats(String uid) {
+    return _db
+        .collection('chats')
+        .where('participants', arrayContains: uid)
+        .orderBy('lastTimestamp', descending: true)
+        .snapshots();
+  }
+
   Future<void> sendMessage({
+    required String chatId,
     required String senderUid,
-    required String receiverUid,
     required String message,
   }) async {
-    final chatId = getChatId(senderUid, receiverUid);
-
     final msgRef = _db
-        .collection(chatsCollection)
+        .collection('chats')
         .doc(chatId)
         .collection('messages')
         .doc();
 
-    final timestamp = FieldValue.serverTimestamp();
-
-    final msgData = {
-      'id': msgRef.id,
+    await msgRef.set({
       'senderUid': senderUid,
-      'receiverUid': receiverUid,
       'message': message,
-      'timestamp': timestamp,
+      'timestamp': FieldValue.serverTimestamp(),
       'status': 'sent',
-    };
+    });
 
-    /// 1️⃣ store message
-    await msgRef.set(msgData);
-
-    /// 2️⃣ update chat metadata (IMPORTANT)
-    await _db.collection(chatsCollection).doc(chatId).set({
-      'participants': [senderUid, receiverUid],
+    /// Update chat preview
+    await _db.collection('chats').doc(chatId).update({
       'lastMessage': message,
-      'lastMessageTime': timestamp,
-      'lastSenderUid': senderUid,
-    }, SetOptions(merge: true));
+      'lastTimestamp': FieldValue.serverTimestamp(),
+    });
   }
 
-  /// -------------------------------
-  /// STREAM MESSAGES
-  /// -------------------------------
-  Stream<List<Map<String, dynamic>>> getMessages({
-    required String userUid,
-    required String chatPartnerUid,
-  }) {
-    final chatId = getChatId(userUid, chatPartnerUid);
-
+  Stream<List<Map<String, dynamic>>> getMessages(String chatId) {
     return _db
-        .collection(chatsCollection)
+        .collection('chats')
         .doc(chatId)
         .collection('messages')
-        .orderBy('timestamp', descending: false)
+        .orderBy('timestamp')
         .snapshots()
         .map((snapshot) {
       return snapshot.docs.map((doc) {
@@ -100,89 +132,55 @@ class FirestoreService {
     });
   }
 
-  /// -------------------------------
-  /// STREAM USER CHATS (🔥 IMPORTANT)
-  /// -------------------------------
-  Stream<List<Map<String, dynamic>>> getUserChats(String uid) {
-    return _db
-        .collection(chatsCollection)
-        .where('participants', arrayContains: uid)
-        .orderBy('lastMessageTime', descending: true)
-        .snapshots()
-        .map((snapshot) {
-      return snapshot.docs.map((doc) => doc.data()).toList();
-    });
-  }
-
-  /// -------------------------------
-  /// MARK AS DELIVERED
-  /// -------------------------------
   Future<void> markAsDelivered({
-    required String senderUid,
-    required String receiverUid,
+    required String chatId,
+    required String currentUid,
   }) async {
-    final chatId = getChatId(senderUid, receiverUid);
-
     final snapshot = await _db
-        .collection(chatsCollection)
+        .collection('chats')
         .doc(chatId)
         .collection('messages')
-        .where('receiverUid', isEqualTo: receiverUid)
         .where('status', isEqualTo: 'sent')
         .get();
 
-    for (final doc in snapshot.docs) {
-      await doc.reference.update({'status': 'delivered'});
+    for (var doc in snapshot.docs) {
+      if (doc['senderUid'] != currentUid) {
+        await doc.reference.update({'status': 'delivered'});
+      }
     }
   }
 
-  /// -------------------------------
-  /// MARK AS READ
-  /// -------------------------------
   Future<void> markAsRead({
     required String chatId,
-    required String currentUserUid,
+    required String currentUid,
   }) async {
     final snapshot = await _db
-        .collection(chatsCollection)
+        .collection('chats')
         .doc(chatId)
         .collection('messages')
-        .where('receiverUid', isEqualTo: currentUserUid)
         .where('status', whereIn: ['sent', 'delivered'])
         .get();
 
-    for (final doc in snapshot.docs) {
-      await doc.reference.update({'status': 'read'});
+    for (var doc in snapshot.docs) {
+      if (doc['senderUid'] != currentUid) {
+        await doc.reference.update({'status': 'read'});
+      }
     }
   }
 
-  /// -------------------------------
-  /// UNREAD COUNT (REALTIME)
-  /// -------------------------------
-  Stream<int> unreadCountStream({
+  Future<int> getUnreadCount({
     required String chatId,
-    required String currentUserUid,
-  }) {
-    return _db
-        .collection(chatsCollection)
+    required String currentUid,
+  }) async {
+    final snapshot = await _db
+        .collection('chats')
         .doc(chatId)
         .collection('messages')
-        .where('receiverUid', isEqualTo: currentUserUid)
-        .where('status', whereIn: ['sent', 'delivered'])
-        .snapshots()
-        .map((snapshot) => snapshot.docs.length);
-  }
+        .where('status', isEqualTo: 'sent')
+        .get();
 
-  /// -------------------------------
-  /// ONLINE STATUS
-  /// -------------------------------
-  Future<void> updateOnlineStatus({
-    required String uid,
-    required bool isOnline,
-  }) async {
-    await _db.collection('db_user').doc(uid).update({
-      'isOnline': isOnline,
-      'lastSeen': FieldValue.serverTimestamp(),
-    });
+    return snapshot.docs
+        .where((doc) => doc['senderUid'] != currentUid)
+        .length;
   }
 }

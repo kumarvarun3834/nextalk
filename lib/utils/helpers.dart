@@ -1,5 +1,5 @@
 import '../auth/auth_service.dart';
-import '../models/user_model.dart';
+import '../services/firestore_service.dart';
 
 class AppServices {
   static final auth = AuthService();

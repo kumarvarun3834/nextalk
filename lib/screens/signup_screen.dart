@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../models/user_model.dart';
-import '../services/firestore_service.dart' hide FirestoreService;
+import '../services/firestore_service.dart';
 import 'profile_module.dart';
 
 class ProfileCreationScreen extends StatefulWidget {
